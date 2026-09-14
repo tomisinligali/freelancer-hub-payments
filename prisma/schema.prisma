@@ -1,0 +1,180 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Plan {
+  FREE
+  MONTHLY
+  YEARLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+}
+
+enum PaymentLogStatus {
+  UNVERIFIED
+  SUCCESSFUL
+  PENDING
+  FAILED
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  fullName      String?
+  firstName     String?
+  middleName    String?   // joins extra names when full name has more than 3 words
+  lastName      String?
+  passwordHash  String?   // null if OAuth-only account
+  emailVerified DateTime?
+  oauthProvider String?   // e.g. "google"
+  oauthId       String?
+  deactivatedAt DateTime? // grace period start
+  plan          Plan      @default(FREE) // the plan flag sold by this slice
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  subscription Subscription?
+
+  subscriptionEvents SubscriptionEvent[]
+  checkoutSessions   CheckoutSession[]
+  paymentLogs        PaymentLog[]
+
+  @@index([email])
+}
+
+model VerificationToken {
+  id         String   @id @default(cuid())
+  identifier String   // email address
+  token      String   @unique
+  type       String   // "email_verification" or "password_reset"
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([identifier, type])
+}
+
+model AccountRequest {
+  id             String    @id @default(cuid())
+  idempotencyKey String    @unique
+  email          String
+  status         String    @default("PENDING") // PENDING | COMPLETED
+  createdAt      DateTime  @default(now())
+  completedAt    DateTime?
+
+  @@index([email])
+}
+
+model LoginAttempt {
+  id          String    @id @default(cuid())
+  email       String
+  ip          String
+  failures    Int       @default(0)
+  lockedUntil DateTime?
+  lastAttempt DateTime  @default(now())
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([email, ip])
+  @@index([email])
+  @@index([ip])
+}
+
+model Subscription {
+  id                      String             @id @default(cuid())
+  userId                  String             @unique
+  user                    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan                    Plan               @default(FREE)
+  status                  SubscriptionStatus @default(ACTIVE)
+  providerCustomerId      String?
+  providerSubscriptionId  String?            // Flutterwave subscription id used for recurring billing
+  currentPeriodStart      DateTime?
+  currentPeriodEnd        DateTime?          // access is guaranteed to the user until this date
+  cancelAtPeriodEnd       Boolean            @default(false)
+  cancellationReason      String?            // optional reason captured at cancellation time
+  pendingDowngradeTo      Plan?              // set when a downgrade is requested; applied at period end
+  pendingResubscribeTo    Plan?              // set when a cancelled user schedules a re-subscription; applied at period end
+  pendingResubscribeCheckoutId String?       // checkout session opened to pay for the scheduled re-subscription
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+
+  events SubscriptionEvent[]
+
+  @@index([status])
+  @@index([currentPeriodEnd])
+}
+
+model SubscriptionEvent {
+  id                      String   @id @default(cuid())
+  userId                  String
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptionId          String?
+  subscription            Subscription? @relation(fields: [subscriptionId], references: [id], onDelete: SetNull)
+  type                    String   // SUBSCRIBED | PAYMENT_VERIFIED | UPGRADE | DOWNGRADE_SCHEDULED | DOWNGRADE_APPLIED | CANCELLED | PERIOD_ENDED | FREE
+  plan                    Plan
+  amount                  Int      // minor units (kobo)
+  currency                String   @default("NGN")
+  providerReference       String?
+  providerSubscriptionId  String?
+  checkoutSessionId       String?
+  details                 String?  // JSON-encoded metadata
+  createdAt               DateTime @default(now())
+
+  @@index([userId])
+  @@index([userId, createdAt])
+}
+
+model CheckoutSession {
+  id                   String   @id @default(cuid())
+  txRef                String   @unique
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  intent               String   // SUBSCRIBE | UPGRADE | RESUBSCRIBE
+  plan                 Plan
+  amount               Int      // minor units (kobo)
+  status               String   @default("PENDING") // PENDING | COMPLETED | FAILED | CANCELLED
+  providerCheckoutUrl  String?
+  providerTransactionId String?
+  providerSubscriptionId String?
+  completedAt          DateTime?
+  createdAt            DateTime @default(now())
+
+  paymentLogs PaymentLog[]
+
+  @@index([userId])
+  @@index([userId, status])
+}
+
+model PaymentLog {
+  id                      String          @id @default(cuid())
+  userId                  String
+  user                    User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  checkoutSessionId       String?
+  checkoutSession         CheckoutSession? @relation(fields: [checkoutSessionId], references: [id], onDelete: SetNull)
+  type                    String          // CHECKOUT_INITIATED | PROVIDER_RETURN | WEBHOOK_RECEIVED | VERIFY_REQUESTED | VERIFY_COMPLETED | STATE_CHANGED | ERROR
+  source                  String          // RETURN_PAGE | WEBHOOK | SYSTEM
+  plan                    Plan?
+  amount                  Int?            // minor units (kobo)
+  currency                String?
+  txRef                   String?
+  providerTransactionId   String?
+  providerSubscriptionId  String?
+  verificationStatus      PaymentLogStatus @default(UNVERIFIED)
+  rawPayload              Json?          // unverified claims: return query params or raw webhook body
+  verificationResult      Json?          // verified provider response
+  message                 String?
+  createdAt               DateTime        @default(now())
+
+  @@index([userId])
+  @@index([txRef])
+  @@index([type])
+  @@index([userId, createdAt])
+}
