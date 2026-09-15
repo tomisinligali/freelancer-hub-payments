@@ -127,7 +127,7 @@ test("finalizeFromWebhook applies the subscribe after a successful verification"
   assert.equal(user?.plan, "MONTHLY");
 });
 
-test("processReturn verifies but does not apply the plan change (return page path)", async () => {
+test("processReturn applies the plan after a successfully verified payment (return page path)", async () => {
   const userId = await createTestUser();
   userIds.push(userId);
   const provider = new FakeProvider();
@@ -137,15 +137,16 @@ test("processReturn verifies but does not apply the plan change (return page pat
   const txRef = checkout.checkoutUrl.split("/").pop() ?? "";
 
   const result = await service.processReturn(userId, txRef, "tx_101");
-  assert.equal(result.status, "PENDING");
+  assert.equal(result.status, "COMPLETED");
   assert.equal(result.ok, true);
 
   const view = await service.getView(userId);
-  assert.equal(view.plan, "FREE", "plan is not changed by the return page path");
+  assert.equal(view.plan, "MONTHLY", "the return page applies the verified payment");
+  assert.equal(view.hasPaidPlan, true);
 
-  // Webhook finalizes it.
+  // The return path must be idempotent: a second delivery (webhook) is a no-op.
   const finalResult = await service.finalizeFromWebhook(userId, txRef, "tx_101");
-  assert.equal(finalResult.status, "COMPLETED");
+  assert.equal(finalResult.status, "ALREADY_COMPLETED");
 
   const finalView = await service.getView(userId);
   assert.equal(finalView.plan, "MONTHLY");

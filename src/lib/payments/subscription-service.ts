@@ -503,7 +503,7 @@ export function createSubscriptionService(provider: PaymentProvider) {
     txRef: string,
     transactionId: string | undefined,
     rawReturnParams: Record<string, unknown> | undefined,
-    options: { finalize: boolean; source: "RETURN_PAGE" | "WEBHOOK" },
+    options: { source: "RETURN_PAGE" | "WEBHOOK" },
   ): Promise<ReturnResult> {
     const { source } = options;
     const db = getDb(userId);
@@ -695,17 +695,12 @@ export function createSubscriptionService(provider: PaymentProvider) {
       };
     }
 
-    // Verification passed. Branch on finalize.
-    if (!options.finalize) {
-      // Return page: re-read session — webhook may have already applied.
-      const reloaded = await db.checkoutSession.findUnique({ where: { txRef } });
-      if (reloaded?.status === "COMPLETED") {
-        return { ok: true, status: "COMPLETED", message: "Your payment was successful and your plan is active.", plan: session.plan };
-      }
-      return { ok: true, status: "PENDING", message: "Payment confirmed. Your plan is being activated — this can take a moment.", plan: session.plan };
-    }
-
-    // Finalize: apply the plan change.
+    // Verification passed. Apply the plan change.
+    // Both the return page and the webhook finalize, so a verified payment is
+    // granted regardless of which channel delivers the confirmation. The
+    // idempotency gate above makes a second delivery a no-op. (PRD §6: "on
+    // return, the transaction is verified against the provider before any
+    // subscription state changes".)
     const now = new Date();
     const existing = (await loadUserSubscription(userId))?.subscription ?? null;
 
@@ -825,7 +820,9 @@ export function createSubscriptionService(provider: PaymentProvider) {
     transactionId?: string,
     rawReturnParams?: Record<string, unknown>,
   ): Promise<ReturnResult> {
-    return resolvePayment(userId, txRef, transactionId, rawReturnParams, { finalize: false, source: PAYMENT_LOG_SOURCE.RETURN_PAGE });
+    return resolvePayment(userId, txRef, transactionId, rawReturnParams, {
+      source: PAYMENT_LOG_SOURCE.RETURN_PAGE,
+    });
   }
 
   async function finalizeFromWebhook(
@@ -834,7 +831,9 @@ export function createSubscriptionService(provider: PaymentProvider) {
     transactionId?: string,
     rawReturnParams?: Record<string, unknown>,
   ): Promise<ReturnResult> {
-    return resolvePayment(userId, txRef, transactionId, rawReturnParams, { finalize: true, source: PAYMENT_LOG_SOURCE.WEBHOOK });
+    return resolvePayment(userId, txRef, transactionId, rawReturnParams, {
+      source: PAYMENT_LOG_SOURCE.WEBHOOK,
+    });
   }
 
   async function requestDowngrade(userId: string): Promise<void> {
